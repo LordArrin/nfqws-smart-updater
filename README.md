@@ -126,6 +126,12 @@ https://example.com/my-list.txt
 
 ---
 
+# Пример использования:
+
+![Screenshot #1](/usage_example1.png?raw=true)
+
+---
+
 ### ❓ Частые вопросы и решение проблем
 
 **1. Скрипт пишет "SAFETY TRIGGER: New list size is too small" и не обновляет файл.**
@@ -145,5 +151,3 @@ https://example.com/my-list.txt
 
 **4. Не повредится ли флеш память от перезаписей?**
 *   Скрипт хранит все временные и кешированные файлы в оперативной памяти - по-умолчанию в папке `/tmp/nfqws_updater/`. Можно указать любую папку в качестве рабочей с помощью параметра `-w`.
-
-![Screenshot #1](/usage_example1.png?raw=true)
