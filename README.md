@@ -146,4 +146,4 @@ https://example.com/my-list.txt
 **4. Не повредится ли флеш память от перезаписей?**
 *   Скрипт хранит все временные и кешированные файлы в оперативной памяти - по-умолчанию в папке `/tmp/nfqws_updater/`. Можно указать любую папку в качестве рабочей с помощью параметра `-w`.
 
-![Screenshot #1](/blob/main/usage_example1.png?raw=true)
+![Screenshot #1](/usage_example1.png?raw=true)
