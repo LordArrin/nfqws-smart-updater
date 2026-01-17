@@ -18,13 +18,13 @@
 OpenWrt 24.10 и более старые:
 ```
 opkg update
-opkg install curl coreutils-sort coreutils-sleep coreutils-nl sipcalc coreutils-md5sum
+opkg install curl coreutils-sort coreutils-sleep coreutils-nl coreutils-md5sum coreutils-split sipcalc 
 ```
 
 OpenWrt 25.12 и старше, включая Snapshot:
 ```
 apk update
-apk add curl coreutils-sort coreutils-sleep coreutils-nl sipcalc coreutils-md5sum
+apk add curl coreutils-sort coreutils-sleep coreutils-nl coreutils-md5sum coreutils-split sipcalc
 ```
 
 > **Важно:** Если у вас не установлен пакет `coreutils`, возможно, придется ставить их по отдельности. Если возникнет ошибка, просто убедитесь, что `sipcalc` и `curl` установлены — это главные зависимости.
