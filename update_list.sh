@@ -2,8 +2,8 @@
 
 # ==============================================================================
 # # REQUIRED PACKAGES (OpenWrt):
-# curl coreutils-sort coreutils-sleep coreutils-nl sipcalc 
-# coreutils-md5sum
+# curl coreutils-sort coreutils-sleep coreutils-nl 
+# coreutils-md5sum coreutils-split sipcalc 
 # ==============================================================================
 
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
