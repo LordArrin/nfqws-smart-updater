@@ -24,7 +24,7 @@ opkg install curl coreutils-sort coreutils-sleep coreutils-nl sipcalc coreutils-
 OpenWrt 25.12 и старше, включая Snapshot:
 ```
 apk update
-apk install curl coreutils-sort coreutils-sleep coreutils-nl sipcalc coreutils-md5sum
+apk add curl coreutils-sort coreutils-sleep coreutils-nl sipcalc coreutils-md5sum
 ```
 
 > **Важно:** Если у вас не установлен пакет `coreutils`, возможно, придется ставить их по отдельности. Если возникнет ошибка, просто убедитесь, что `sipcalc` и `curl` установлены — это главные зависимости.
