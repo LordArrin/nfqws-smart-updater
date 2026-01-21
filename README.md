@@ -75,11 +75,11 @@ https://example.com/my-list.txt
 
 Попробуем запустить скрипт вручную, чтобы убедиться, что всё работает.
 
-Вам нужно знать, куда NFQWS ожидает получить итоговый файл. Обычно это `/etc/nfqws/user.list`.
+Вам нужно знать, куда NFQWS ожидает получить итоговый файл. Обычно это `/etc/nfqws/ipset.list`.
 
 **Команда запуска:**
 ```
-/etc/nfqws/scripts/update_list.sh -f /etc/nfqws/lists/urls.txt -o /etc/nfqws/user.list -w /tmp/nfqws_updater/urls/
+/etc/nfqws/scripts/update_list.sh -f /etc/nfqws/lists/urls.txt -o /etc/nfqws/ipset.list -w /tmp/nfqws_updater/urls/
 ```
 
 **Основные параметры:**
@@ -111,14 +111,14 @@ https://example.com/my-list.txt
 
 2.  Добавьте строку (например, обновление в 4:00 утра каждый день):
     ```
-    0 4 * * * /etc/nfqws/scripts/update_list.sh -f /etc/nfqws/lists/urls.txt -o /etc/nfqws/user.list
+    0 4 * * * /etc/nfqws/scripts/update_list.sh -f /etc/nfqws/lists/urls.txt -o /etc/nfqws/ipset.list
     ```
 
     **Вариант без перезагрузки сервиса (с флагом -R):**
     Если вы хотите обновлять файл часто, но перезагружать сервис редко, можно сделать так:
     ```bash
     # Обновляем файл каждые 5 часов БЕЗ перезагрузки
-    0 */5 * * * /etc/nfqws/scripts/update_list.sh -R -f /etc/nfqws/lists/urls.txt -o /etc/nfqws/user.list
+    0 */5 * * * /etc/nfqws/scripts/update_list.sh -R -f /etc/nfqws/lists/urls.txt -o /etc/nfqws/ipset.list
     
     # Перезагружаем сервис раз в сутки (командой самого роутера)
     5 4 * * * service nfqws-keenetic restart
