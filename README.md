@@ -18,12 +18,12 @@
 OpenWrt 24.10 и более старые:
 ```
 opkg update
-opkg install curl coreutils-sort coreutils-sleep coreutils-nl coreutils-md5sum coreutils-split sipcalc aggregate flock
+opkg install curl coreutils-sort coreutils-sleep coreutils-nl coreutils-md5sum coreutils-split sipcalc
 ```
 
 OpenWrt 25.12 и новее, включая Snapshot:
 ```
-apk --update-cache add curl coreutils-sort coreutils-sleep coreutils-nl coreutils-md5sum coreutils-split sipcalc aggregate flock
+apk --update-cache add curl coreutils-sort coreutils-sleep coreutils-nl coreutils-md5sum coreutils-split sipcalc
 ```
 
 ---
