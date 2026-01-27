@@ -21,7 +21,7 @@ opkg update
 opkg install curl coreutils-sort coreutils-sleep coreutils-nl coreutils-md5sum coreutils-split sipcalc aggregate flock
 ```
 
-OpenWrt 25.12 и старше, включая Snapshot:
+OpenWrt 25.12 и новее, включая Snapshot:
 ```
 apk --update-cache add curl coreutils-sort coreutils-sleep coreutils-nl coreutils-md5sum coreutils-split sipcalc aggregate flock
 ```
