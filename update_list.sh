@@ -1,12 +1,7 @@
 #!/bin/sh
 
-# ==============================================================================
-# # REQUIRED PACKAGES (OpenWrt):
-# curl coreutils-sort coreutils-sleep coreutils-nl 
-# coreutils-md5sum coreutils-split sipcalc 
-# ==============================================================================
-
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
 set -euo pipefail
 
 # ==============================================================================
@@ -31,12 +26,12 @@ log_warn() { printf "${YELLOW}WARN:${NC} %s\n" "$1"; }
 log_err()  { printf "${RED}ERR:${NC} %s\n" "$1"; }
 
 DEFAULT_WORKDIR="/tmp/nfqws_updater"
-DEFAULT_PAUSE=2
+DEFAULT_PAUSE=3
 SERVICE_NAME="nfqws-keenetic"
 MIN_LINES=10
 THRESHOLD_PERCENT=90
 LOG_FILE="/tmp/firewall_update.log"
-LOCK="/tmp/lock/nfqws_global_update.lock"
+
 SKIP_SAFETY=0
 NO_RESTART=0
 
@@ -58,20 +53,6 @@ AWK_SCRIPT_STATS='
     BEGIN { diff=curr-last; if(is_bytes)val_str=human(curr);else val_str=curr; delta_str=""; if(last>0&&diff!=0){color=(diff>0)?green:red;sign=(diff>0)?"+":"";d_val=(is_bytes)?human(diff):diff;delta_str=sprintf(" %s(%s%s)%s",color,sign,d_val,nc);} printf "  %-13s: %s%s\n",lbl,val_str,delta_str; }
 '
 
-AWK_SCRIPT_OPTIMIZER='
-    {
-        this_end = $2
-        is_covered = 0
-        if (last_end != "") {
-             if (this_end <= last_end) is_covered = 1
-        }
-        if (!is_covered) {
-            print $3
-            last_end = this_end
-        }
-    }
-'
-
 # ==============================================================================
 # 3. CONFIGURATION CONTEXT
 # ==============================================================================
@@ -80,6 +61,7 @@ LIST_FILE=""; EXISTING_FILE=""; OUTPUT_FILE=""; WORKDIR=""; CACHE_DIR=""; TMP_BA
 PAUSE=0; CURL_OPTS=""; SORT_RAM=""; SORT_PARALLEL=""; URLS_CONTENT=""; TMPDIR=""; TMP_OUTPUT_FILE=""
 STAT_V4=0; STAT_V6=0; STAT_TOTAL=0; STAT_BYTES=0
 L_V4=0; L_V6=0; L_TOT=0; L_BYTES=0; L_TS=""; CHANGED=0; SHOW_TS=""
+LOCK=""
 
 init_configuration() {
     # Smart RAM detection
@@ -99,7 +81,6 @@ init_configuration() {
 
     local workdir_arg=""; local pause_arg=""
     
-    # Added 'r' to getopts
     while getopts "f:o:e:w:t:Sr" opt; do
         case $opt in
             f) LIST_FILE="$OPTARG" ;;
@@ -112,16 +93,19 @@ init_configuration() {
             *) log_warn "Unknown option -$OPTARG";;
         esac
     done
+
     if [ -n "$pause_arg" ] && echo "$pause_arg" | grep -qE '^[0-9]+$'; then PAUSE="$pause_arg"; else PAUSE="$DEFAULT_PAUSE"; fi
     
     CURL_OPTS="-sSLfR --connect-timeout 15 --max-time 60 --retry 3 --retry-delay $PAUSE"
     WORKDIR="${workdir_arg:-$DEFAULT_WORKDIR}"; WORKDIR="${WORKDIR%/}"
     CACHE_DIR="${WORKDIR}/cache"; TMP_BASE="${WORKDIR}/temp"
+
     if [ -z "$OUTPUT_FILE" ]; then
         local script_dir="$(cd "$(dirname "$0")" && pwd)"
         OUTPUT_FILE="${script_dir}/ipset_include.txt"
     fi
     TMP_OUTPUT_FILE="${OUTPUT_FILE}.tmp"
+
     if [ -n "$LIST_FILE" ] && [ -f "$LIST_FILE" ]; then
         URLS_CONTENT=$(grep -vE '^\s*#|^\s*$' "$LIST_FILE" | tr -d '\r' || true)
     fi
@@ -135,26 +119,32 @@ print_config_table() {
     printf "  Existing File: %s\n" "${EXISTING_FILE:-(none)}"
     printf "  Output File  : %s\n" "$OUTPUT_FILE"
     printf "  Work Dir     : %s\n" "$WORKDIR"
-    printf "  Sort RAM     : %s\n" "$SORT_RAM"
-    printf "  Sort Threads : %s\n" "$SORT_PARALLEL"
     printf "  Service      : %s\n" "$SERVICE_NAME"
     printf "  Safety Check : %s\n" "$([ "$SKIP_SAFETY" -eq 1 ] && echo "DISABLED" || echo "ENABLED")"
-    printf "  Auto Restart : %s\n" "$([ "$NO_RESTART" -eq 1 ] && echo "DISABLED" || echo "ENABLED")"
     echo "=================================================="; echo ""
 }
 
 setup_environment() {
+    # 
+    local session_id
+    session_id=$(printf "%s|%s" "$OUTPUT_FILE" "$WORKDIR" | md5sum | cut -d' ' -f1)
+    
+    LOCK="/tmp/lock/nfqws_update_${session_id}.lock"
+
     mkdir -p "$CACHE_DIR" "$TMP_BASE" "$(dirname "$LOCK")" "$(dirname "$OUTPUT_FILE")"
     TMPDIR="$(mktemp -d "$TMP_BASE/ipset.XXXXXX")"
-    if [ -f "$LOCK" ] && kill -0 "$(cat "$LOCK")" 2>/dev/null; then
-        log_warn "Another NFQWS update script is running (Lock: $LOCK). Exiting."; exit 0
+
+    exec 9>>"$LOCK"
+    if ! flock -n -x 9; then
+        log_warn "Blocked: Another instance is running for this Output/Workdir."
+        log_warn "Lock file: $LOCK"
+        exit 0
     fi
-    echo "$$" > "$LOCK"
 }
 
 cleanup() {
     rm -rf "${TMPDIR:-}"
-    if [ -f "${LOCK:-}" ] && [ "$(cat "$LOCK" 2>/dev/null)" = "$$" ]; then rm -f "$LOCK"; fi
+    exec 9>&-
 }
 
 trap cleanup EXIT
@@ -172,6 +162,7 @@ fetch_source() {
     local label=""
     if [ "$type" = "file" ]; then label="Local file $(basename "$src" | cut -c1-45)..."
     else label="List ID $(echo "$id" | cut -c1-8)..."; fi
+
     printf " [%d/%d] %-50s " "$idx" "$total" "$label"
     local status="UNKNOWN"; local color="$RED"
     
@@ -206,6 +197,7 @@ fetch_source() {
 validate_cidr() {
     local type=$1; local infile="$TMPDIR/$type.raw"; local outfile="$TMPDIR/$type.valid"
     [ ! -f "$infile" ] && touch "$outfile" && return
+
     local lines=$(wc -l < "$infile" 2>/dev/null || echo "???")
     printf " Validating ${CYAN}%-4s${NC} ranges (%s lines)... " "$type" "$lines"
     > "$outfile"
@@ -223,6 +215,7 @@ validate_cidr() {
             sipcalc -c "$line" >/dev/null 2>&1 && echo "$line" >> "$outfile"
         done < "$infile"
     fi
+
     local valid=$(wc -l < "$outfile" 2>/dev/null || echo "0")
     printf "${GREEN}Done${NC} (Valid: $valid)\n"
 }
@@ -231,39 +224,22 @@ sort_list() {
     local type="$1"; shift
     local infile="$TMPDIR/$type.valid"; local outfile="$TMPDIR/$type.sorted"
     printf " Sorting ${CYAN}%-4s${NC} " "$type"
+
     if [ ! -f "$infile" ]; then touch "$outfile"; echo "(Skipped)"; return; fi
-    local cmd_sort="sort --parallel=$SORT_PARALLEL -S $SORT_RAM"
-    
-    local awk_ipv4_prep='
-    function ip2int(ip) {
-        split(ip, a, ".");
-        return a[1]*16777216 + a[2]*65536 + a[3]*256 + a[4];
-    }
-    {
-        split($0, p, "/");
-        ip=p[1]; mask=(p[2]==""?32:p[2]);
-        if(mask<0 || mask>32) next;
-        ival=ip2int(ip);
-        hostmask = (2 ^ (32-mask)) - 1;
-        start_int = ival - (ival % (hostmask + 1))
-        end_int = start_int + hostmask
-        print start_int "\t" end_int "\t" $0
-    }
-    '
-    if [ "$type" = "ipv6" ]; then
-        printf "(Canonical Sort)... "
-        if $cmd_sort -u -k1,1 "$infile" 2>/dev/null | cut -f2 > "$outfile"; then
+
+    if [ "$type" = "ipv4" ]; then
+        printf "(Sorting with aggregation)... "
+        if aggregate -q -t < "$infile" > "$outfile"; then
             printf "${GREEN}Done${NC}\n"
         else
             printf "${RED}Failed${NC}\n"; return 1
         fi
     else
-        printf "(Calc & Overlay Check)... "
-        if awk "$awk_ipv4_prep" "$infile" | \
-           $cmd_sort -k1,1n -k2,2rn | \
-           awk "$AWK_SCRIPT_OPTIMIZER" > "$outfile"; then 
+        local cmd_sort="sort --parallel=$SORT_PARALLEL -S $SORT_RAM"
+        printf "(Sorting)... "
+        if $cmd_sort -u -k1,1 "$infile" 2>/dev/null | cut -f2 > "$outfile"; then
             printf "${GREEN}Done${NC}\n"
-        else 
+        else
             printf "${RED}Failed${NC}\n"; return 1
         fi
     fi
@@ -330,6 +306,7 @@ compare_and_report() {
         if [ "$sum_new" = "$sum_old" ]; then CHANGED=0; head_color="${YELLOW}"; fi
     fi
     if [ "$CHANGED" -eq 1 ]; then SHOW_TS="$current_ts"; else SHOW_TS="${L_TS:-$current_ts}"; fi
+
     echo ""; echo "=================================================="
     printf "  ${head_color}STATISTICS${NC}\n"
     echo "=================================================="
@@ -373,6 +350,7 @@ phase_download() {
     local count_local=0
     [ -n "$EXISTING_FILE" ] && [ -f "$EXISTING_FILE" ] && count_local=1
     local total_tasks=$((count_urls + count_local))
+
     if [ "$total_tasks" -gt 0 ]; then
         log_step "Download lists ($total_tasks sources)..."
         echo ""
@@ -381,6 +359,7 @@ phase_download() {
             i=$((i + 1))
             fetch_source "file" "$EXISTING_FILE" "$i" "$total_tasks"
         elif [ -n "$EXISTING_FILE" ]; then log_warn "Existing file specified but not found: $EXISTING_FILE"; fi
+        
         if [ "$count_urls" -gt 0 ]; then
             echo "$URLS_CONTENT" | while IFS= read -r url; do
                 [ -z "$url" ] && continue; i=$((i + 1))
@@ -409,15 +388,18 @@ phase_sort() {
 phase_finalize() {
     log_step "Creating output..."
     cat "$TMPDIR/ipv4.sorted" "$TMPDIR/ipv6.sorted" > "$TMP_OUTPUT_FILE"
+    
     calc_stats
     guard_rails
     compare_and_report
+
     local needs_update=0
     if [ "$CHANGED" -eq 1 ]; then needs_update=1; elif [ "$L_TOT" -eq 0 ]; then
         echo "L_V4=$STAT_V4" > "$CACHE_DIR/.stats"; echo "L_V6=$STAT_V6" >> "$CACHE_DIR/.stats"
         echo "L_TOT=$STAT_TOTAL" >> "$CACHE_DIR/.stats"; echo "L_BYTES=$STAT_BYTES" >> "$CACHE_DIR/.stats"
         echo "L_TS='$SHOW_TS'" >> "$CACHE_DIR/.stats"
     fi
+
     if [ "$needs_update" -eq 1 ]; then apply_changes; else rm -f "$TMP_OUTPUT_FILE"; fi
 }
 
