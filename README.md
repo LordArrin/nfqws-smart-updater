@@ -126,7 +126,7 @@ https://example.com/my-list.txt
 
 # Пример использования:
 
-![Screenshot #1](/usage_example1.png?raw=true)
+![Screenshot #1](/usage_example2.png?raw=true)
 
 ---
 
