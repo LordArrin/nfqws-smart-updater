@@ -1,7 +1,7 @@
 #!/bin/sh
 
+export LC_ALL=C
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
-
 set -euo pipefail
 
 # ==============================================================================
@@ -9,12 +9,7 @@ set -euo pipefail
 # ==============================================================================
 
 if [ -t 1 ]; then
-    RED='\033[0;31m'
-    GREEN='\033[0;32m'
-    YELLOW='\033[1;33m'
-    BLUE='\033[0;34m'
-    CYAN='\033[0;36m'
-    NC='\033[0m'
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; NC='\033[0m'
 else
     RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; NC=''
 fi
@@ -79,23 +74,20 @@ L_V4=0; L_V6=0; L_TOT=0; L_BYTES=0; L_TS=""; CHANGED=0; SHOW_TS=""
 LOCK_FILE=""; LOCK_ID=""
 
 init_configuration() {
-    # Smart RAM detection
     SORT_RAM="$(awk '/MemAvailable/ {
         kb = $2;
-        mb = int((kb / 1024) * 0.5);  # 50% of available RAM
-        if (mb < 64) mb = 64;     # Min floor: 64MB
-        if (mb > 4096) mb = 4096; # Max cap: 4GB
+        mb = int((kb / 1024) * 0.5);
+        if (mb < 64) mb = 64;
+        if (mb > 4096) mb = 4096;
         printf "%dM", mb
     }' /proc/meminfo 2>/dev/null || echo '64M')"
     
-    # Safe CPU detection
     local cpu_count
     cpu_count=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
     SORT_PARALLEL="$((cpu_count - 1))"
     [ "$SORT_PARALLEL" -lt 1 ] && SORT_PARALLEL=1
     
-    # CORRECTED: Proper argument parsing with error handling
-    OPTIND=1  # Reset getopts index
+    OPTIND=1
     local workdir_arg=""; local pause_arg=""
     
     while getopts ":f:o:e:w:t:SRD" opt; do
@@ -113,11 +105,8 @@ init_configuration() {
         esac
     done
     
-    # Handle extra positional arguments
     shift $((OPTIND - 1))
-    if [ $# -gt 0 ]; then
-        log_warn "Ignoring extra arguments: $*"
-    fi
+    if [ $# -gt 0 ]; then log_warn "Ignoring extra arguments: $*"; fi
     
     if [ -n "$pause_arg" ] && echo "$pause_arg" | grep -qE '^[0-9]+$'; then 
         PAUSE="$pause_arg"
@@ -128,18 +117,14 @@ init_configuration() {
     CURL_OPTS="-sSLfR --connect-timeout 10 --max-time 30 --max-filesize $MAX_FILESIZE_BYTES --retry 3 --retry-delay $PAUSE"
     WORKDIR="${workdir_arg:-$DEFAULT_WORKDIR}"; WORKDIR="${WORKDIR%/}"
     CACHE_DIR="${WORKDIR}/cache"; TMP_BASE="${WORKDIR}/temp"
-
     if [ -z "$OUTPUT_FILE" ]; then
         local script_dir="$(cd "$(dirname "$0")" && pwd)"
         OUTPUT_FILE="${script_dir}/ipset_include.txt"
     fi
     TMP_OUTPUT_FILE="${OUTPUT_FILE}.tmp"
-
     if [ -n "$LIST_FILE" ] && [ -f "$LIST_FILE" ]; then
         URLS_CONTENT=$(grep -vE '^\s*#|^\s*$' "$LIST_FILE" | tr -d '\r' || true)
     fi
-
-    # Resource-based lock identifier
     LOCK_ID=$(printf "%s:%s" "$WORKDIR" "$OUTPUT_FILE" | md5sum | cut -c1-12)
     LOCK_FILE="/tmp/lock/nfqws_update.${LOCK_ID}.lock"
 }
@@ -148,16 +133,10 @@ print_config_table() {
     echo ""; echo "=================================================="
     printf "  ${CYAN}CONFIGURATION${NC}\n"
     echo "=================================================="
-    if [ -n "$LIST_FILE" ]; then
-        printf "  List file    : %s\n" "$LIST_FILE"
-    else
-        printf "  List file    : ${YELLOW}none${NC}\n"
-    fi
-    if [ -n "$EXISTING_FILE" ]; then
-        printf "  Existing file: %s\n" "$EXISTING_FILE"
-    else
-        printf "  Existing file: ${YELLOW}none${NC}\n"
-    fi
+    if [ -n "$LIST_FILE" ]; then printf "  List file    : %s\n" "$LIST_FILE"
+    else printf "  List file    : ${YELLOW}none${NC}\n"; fi
+    if [ -n "$EXISTING_FILE" ]; then printf "  Existing file: %s\n" "$EXISTING_FILE"
+    else printf "  Existing file: ${YELLOW}none${NC}\n"; fi
     printf "  Output file  : %s\n" "$OUTPUT_FILE"
     printf "  Work dir     : %s\n" "$WORKDIR"
     printf "  Using RAM    : %s\n" "$SORT_RAM"
@@ -172,6 +151,8 @@ print_config_table() {
 setup_environment() {
     mkdir -p "$CACHE_DIR" "$TMP_BASE" "$(dirname "$LOCK_FILE")" "$(dirname "$OUTPUT_FILE")"
     TMPDIR="$(mktemp -d "$TMP_BASE/ipset.XXXXXX")"
+    # Файл для отслеживания кэша
+    touch "$TMPDIR/active_cache.list"
 }
 
 acquire_lock() {
@@ -184,8 +165,10 @@ acquire_lock() {
     echo $$ >&200
 }
 
-cleanup() {
-    rm -rf "${TMPDIR:-}"
+cleanup() { 
+    if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
+        rm -rf "$TMPDIR"
+    fi
 }
 
 safe_load_stats() {   
@@ -225,15 +208,17 @@ trap cleanup EXIT
 # 4. HELPER FUNCTIONS
 # ==============================================================================
 
-extract_domain() {
-    echo "$1" | awk -F/ '{print $3}'
-}
+extract_domain() { echo "$1" | awk -F/ '{print $3}'; }
 
 fetch_source() {
     local type="$1"; local src="$2"; local domain_label="$3"
     local id=$(printf "%s" "$src" | md5sum | cut -d' ' -f1)
     local fname="${id}.txt"; local cache_path="$CACHE_DIR/$fname"
     local work_path="$TMPDIR/$fname"; local tmp_dl="$TMPDIR/$fname.dl"
+    
+    # Записываем имя файла в список активных - чиним кеш
+    echo "$fname" >> "$TMPDIR/active_cache.list"
+
     local short_name=""; [ "$type" = "file" ] && short_name="Local" || short_name="$(echo "$id" | cut -c1-8)"
     local status="UNKNOWN"; local color="$RED"
     
@@ -263,9 +248,29 @@ fetch_source() {
             else status="ERROR"; color="$RED"; rm -f "$tmp_dl"; fi
         fi
     fi
-
     if [ -f "$cache_path" ] && [ "$status" != "MISSING" ]; then cp "$cache_path" "$work_path"; fi
     printf " [%-20s] %-10s -> ${color}%s${NC}\n" "$domain_label" "$short_name" "$status"
+}
+
+cleanup_old_cache() {
+    log_step "Cleaning up obsolete cache files..."
+    local count=0
+    
+    # Защита от потери контекста subshell
+    for f in "$CACHE_DIR"/*.txt; do
+        [ -e "$f" ] || continue
+        local bname=$(basename "$f")
+        if ! grep -qF "$bname" "$TMPDIR/active_cache.list" 2>/dev/null; then
+             rm -f "$f"
+             count=$((count+1))
+        fi
+    done
+    
+    if [ "$count" -gt 0 ]; then
+        log_succ "Removed $count unused files."
+    else
+        log_info "Cache is clean."
+    fi
 }
 
 validate_cidr() {
@@ -392,7 +397,6 @@ phase_download() {
         log_step "Processing local file..."
         fetch_source "file" "$EXISTING_FILE" "Local file"
     fi
-
     local count_urls=$(echo "$URLS_CONTENT" | grep -c . || echo 0)
     if [ "$count_urls" -gt 0 ]; then
         local queue_dir="$TMPDIR/queues"
@@ -404,14 +408,17 @@ phase_download() {
             [ -z "$domain" ] && domain="unknown"
             echo "$url" >> "$queue_dir/${domain}.list"
         done
-
         local domain_count=$(ls "$queue_dir"/*.list 2>/dev/null | wc -l)
-
-        log_step "Starting parallel downloads in background..."
+        log_step "Starting parallel downloads in background (Max: $SORT_PARALLEL)..."
         echo ""
         
         for queue_file in "$queue_dir"/*.list; do
             [ -e "$queue_file" ] || continue
+            
+            while [ "$(jobs -p | wc -l)" -ge "$SORT_PARALLEL" ]; do
+                sleep 1
+            done
+
             (
                 set +e 
                 local dom_name=$(basename "$queue_file" .list)
@@ -432,6 +439,9 @@ phase_download() {
     else
         log_info "No URLs to download."
     fi
+    
+    # [FIX] Фикс очистки кэша
+    cleanup_old_cache
 }
 
 phase_process() {
@@ -441,7 +451,9 @@ phase_process() {
 }
 
 phase_validate() { log_step "Validating..."; validate_cidr "ipv4"; validate_cidr "ipv6"; }
+
 phase_sort() { log_step "Optimizing..."; sort_list "ipv4"; sort_list "ipv6"; }
+
 phase_finalize() {
     log_step "Creating output..."
     cat "$TMPDIR/ipv4.sorted" "$TMPDIR/ipv6.sorted" > "$TMP_OUTPUT_FILE"
