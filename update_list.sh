@@ -151,7 +151,7 @@ print_config_table() {
 setup_environment() {
     mkdir -p "$CACHE_DIR" "$TMP_BASE" "$(dirname "$LOCK_FILE")" "$(dirname "$OUTPUT_FILE")"
     TMPDIR="$(mktemp -d "$TMP_BASE/ipset.XXXXXX")"
-    # Файл для отслеживания кэша
+    #                           
     touch "$TMPDIR/active_cache.list"
 }
 
@@ -166,8 +166,9 @@ acquire_lock() {
 }
 
 cleanup() { 
-    if [ -n "${TMPDIR:-}" ] && [ -d "$TMPDIR" ]; then
-        rm -rf "$TMPDIR"
+    if [ -n "${TMPDIR}" ] && [ "${TMPDIR#/}" != "${TMPDIR}" ] && [ -d "$TMPDIR" ]; then
+       # Дополнительная защита: убеждаемся, что TMPDIR не пуст и не корень
+       rm -rf "$TMPDIR"
     fi
 }
 
@@ -208,6 +209,16 @@ trap cleanup EXIT
 # 4. HELPER FUNCTIONS
 # ==============================================================================
 
+check_dependencies() {
+    for cmd in curl sipcalc flock md5sum awk sort; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            log_err "Missing required dependency: $cmd"
+            exit 1
+        fi
+    done
+}
+
+
 extract_domain() { echo "$1" | awk -F/ '{print $3}'; }
 
 fetch_source() {
@@ -216,8 +227,8 @@ fetch_source() {
     local fname="${id}.txt"; local cache_path="$CACHE_DIR/$fname"
     local work_path="$TMPDIR/$fname"; local tmp_dl="$TMPDIR/$fname.dl"
     
-    # Записываем имя файла в список активных - чиним кеш
-    echo "$fname" >> "$TMPDIR/active_cache.list"
+    #                                        -          
+    echo "$fname" >> "$TMPDIR/active_cache_$$_${RANDOM}.list"
 
     local short_name=""; [ "$type" = "file" ] && short_name="Local" || short_name="$(echo "$id" | cut -c1-8)"
     local status="UNKNOWN"; local color="$RED"
@@ -249,14 +260,19 @@ fetch_source() {
         fi
     fi
     if [ -f "$cache_path" ] && [ "$status" != "MISSING" ]; then cp "$cache_path" "$work_path"; fi
-    printf " [%-20s] %-10s -> ${color}%s${NC}\n" "$domain_label" "$short_name" "$status"
+    
+    # Атомарный вывод лога, чтобы строки не наезжали друг на друга
+    {
+        flock 201
+        printf " [%-32s] %-10s -> ${color}%s${NC}\\n" "$domain_label" "$short_name" "$status"
+    } 201>&1
 }
 
 cleanup_old_cache() {
     log_step "Cleaning up obsolete cache files..."
     local count=0
     
-    # Защита от потери контекста subshell
+    #                            subshell
     for f in "$CACHE_DIR"/*.txt; do
         [ -e "$f" ] || continue
         local bname=$(basename "$f")
@@ -439,8 +455,9 @@ phase_download() {
     else
         log_info "No URLs to download."
     fi
-    
-    # [FIX] Фикс очистки кэша
+
+    # Объединяем списки активного кэша и чистим старый
+    cat "$TMPDIR"/active_cache_*.list > "$TMPDIR/active_cache.list" 2>/dev/null || true
     cleanup_old_cache
 }
 
@@ -467,8 +484,10 @@ phase_finalize() {
     if [ "$needs_update" -eq 1 ]; then apply_changes; else rm -f "$TMP_OUTPUT_FILE"; fi
 }
 
+
 main() {
     init_configuration "$@"
+    check_dependencies
     setup_environment
     acquire_lock
     check_disk_space
