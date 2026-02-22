@@ -18,12 +18,12 @@
 OpenWrt 24.10 и более старые:
 ```
 opkg update
-opkg install curl coreutils-sort coreutils-sleep coreutils-nl coreutils-md5sum coreutils-split coreutils-timeout sipcalc flock gawk
+opkg install curl coreutils-sort coreutils-sleep coreutils-nl coreutils-md5sum coreutils-split sipcalc flock gawk bash iprange
 ```
 
 OpenWrt 25.12 и новее, включая Snapshot:
 ```
-apk --update-cache add curl coreutils-sort coreutils-sleep coreutils-nl coreutils-md5sum coreutils-split coreutils-timeout sipcalc flock gawk
+apk --update-cache add curl coreutils-sort coreutils-sleep coreutils-nl coreutils-md5sum coreutils-split sipcalc flock gawk bash iprange
 ```
 
 ---
