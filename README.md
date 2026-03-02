@@ -1,4 +1,3 @@
-```
 # nfqws-smart-updater
 Продвинутый скрипт обновления IP-листов для [NFQWS](https://github.com/Anonym-tsk/nfqws-keenetic) (OpenWrt). Умная агрегация подсетей (CIDR merging), строгая валидация (sipcalc), кэширование, умное использование ресурсов устройства и **интеграция с Home Assistant по MQTT**. Поддерживает cron и объединение локального файла с удалёнными источниками.
 
