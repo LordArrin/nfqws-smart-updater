@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 
+export LANG=C
 export LC_ALL=C
+export LANGUAGE=C
+export LC_CTYPE=C
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 set -euo pipefail
 
@@ -31,8 +34,14 @@ LOG_FILE="/tmp/firewall_update.log"
 SKIP_SAFETY=0
 NO_RESTART=0
 
-# === Настройки MQTT (Home Assistant) ===
-# Фиксируем время старта в формате ISO 8601
+# User-Agents
+USER_AGENTS=(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 17_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/152.0"
+)
+
 START_TS=$(date "+%Y-%m-%dT%H:%M:%S%z")
 
 # ==============================================================================
@@ -72,18 +81,15 @@ AWK_SCRIPT_OPTIMIZER='
 # ==============================================================================
 
 LIST_FILE=""; EXISTING_FILE=""; OUTPUT_FILE=""; WORKDIR=""; CACHE_DIR=""; TMP_BASE=""
-PAUSE=0; CURL_OPTS=""; SORT_RAM=""; SORT_PARALLEL=""; URLS_CONTENT=""; TMPDIR=""; TMP_OUTPUT_FILE=""
+PAUSE=0; SORT_RAM=""; SORT_PARALLEL=""; URLS_CONTENT=""; TMPDIR=""; TMP_OUTPUT_FILE=""
 STAT_V4=0; STAT_V6=0; STAT_TOTAL=0; STAT_BYTES=0
 L_V4=0; L_V6=0; L_TOT=0; L_BYTES=0; L_TS=""; CHANGED=0; SHOW_TS=""
-LOCK_FILE=""; LOCK_ID=""
+LOCK_FILE=""; MQTT_SEND=0; MQTT_CONF_FILE=""
 
 init_configuration() {
     SORT_RAM=$(awk '/MemAvailable/ {
-        kb = $2;
-        mb = int((kb / 1024) * 0.5);
-        if (mb < 64) mb = 64;
-        if (mb > 4096) mb = 4096;
-        printf "%dM", mb
+        kb = $2; mb = int((kb / 1024) * 0.5);
+        if (mb < 64) mb = 64; if (mb > 4096) mb = 4096; printf "%dM", mb
     }' /proc/meminfo 2>/dev/null || echo "64M")
     
     local cpu_count
@@ -93,10 +99,7 @@ init_configuration() {
     
     OPTIND=1
     local workdir_arg=""; local pause_arg=""
-    MQTT_SEND=0
-    MQTT_CONF_FILE=""
 
-    # Добавлено двоеточие после M (M:), убрана I
     while getopts ":f:o:e:w:t:SRDM:" opt; do
         case $opt in
             f) LIST_FILE="$OPTARG" ;;
@@ -122,7 +125,6 @@ init_configuration() {
         PAUSE="$DEFAULT_PAUSE"
     fi
     
-    CURL_OPTS="-sSLfR --connect-timeout 10 --max-time 30 --max-filesize $MAX_FILESIZE_BYTES --retry 3 --retry-delay $PAUSE"
     WORKDIR="${workdir_arg:-$DEFAULT_WORKDIR}"; WORKDIR="${WORKDIR%/}"
     CACHE_DIR="${WORKDIR}/cache"; TMP_BASE="${WORKDIR}/temp"
     if [ -z "$OUTPUT_FILE" ]; then
@@ -132,15 +134,12 @@ init_configuration() {
     fi
     TMP_OUTPUT_FILE="${OUTPUT_FILE}.tmp"
     
-    # Генерируем уникальные ID для MQTT на основе имени файла ---
     local base_name
     base_name=$(basename "$OUTPUT_FILE" | sed 's/\.[^.]*$//')
     [ -z "$base_name" ] && base_name="default"
     
-    # Заменяем дефисы и спецсимволы на подчеркивания для MQTT ID
     MQTT_SAFE_ID=$(echo "$base_name" | tr -cd 'a-zA-Z0-9' | tr 'A-Z' 'a-z')
     MQTT_DEVICE_NAME="NFQWS Updater ($base_name)"
-    
     MQTT_PREFIX="homeassistant/sensor/nfqws_${MQTT_SAFE_ID}"
     MQTT_TOPIC_STATE="${MQTT_PREFIX}/state"
 
@@ -148,10 +147,12 @@ init_configuration() {
         URLS_CONTENT=$(grep -vE '^\s*#|^\s*$' "$LIST_FILE" | tr -d '\r' || true)
     fi
 
-    # Загрузка настроек MQTT из файла
+    # MQTT
     if [ -n "$MQTT_CONF_FILE" ] && [ -f "$MQTT_CONF_FILE" ]; then
         while IFS='=' read -r key val; do
-            # Убираем пробелы и кавычки
+            key=$(echo "$key" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            val=$(echo "$val" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            [ -z "$key" ] && continue
             val="${val%\"}"; val="${val#\"}"
             val="${val%\'}"; val="${val#\'}"
             case "$key" in
@@ -160,10 +161,17 @@ init_configuration() {
                 MQTT_USER) MQTT_USER="$val" ;;
                 MQTT_PASS) MQTT_PASS="$val" ;;
             esac
-        done < <(grep -v '^\s*#' "$MQTT_CONF_FILE" | grep -E '^(MQTT_HOST|MQTT_PORT|MQTT_USER|MQTT_PASS)=')
+        done < <(grep -v '^\s*#' "$MQTT_CONF_FILE" | grep -E '^(MQTT_HOST|MQTT_PORT|MQTT_USER|MQTT_PASS)=' || true)
+        
+        if [ -z "${MQTT_HOST:-}" ] || [ -z "${MQTT_PORT:-}" ]; then
+            log_err "MQTT config missing required parameters. MQTT disabled."
+            MQTT_SEND=0
+        fi
     else
-        log_warn "MQTT config file not found or not specified: $MQTT_CONF_FILE. MQTT disabled."
-        MQTT_SEND=0
+        if [ "$MQTT_SEND" -eq 1 ]; then
+            log_warn "MQTT config file not found. MQTT disabled."
+            MQTT_SEND=0
+        fi
     fi
 }
 
@@ -202,19 +210,19 @@ setup_environment() {
 
 acquire_lock() {
     if ! lock -n "$LOCK_FILE"; then
-        log_warn "Скрипт уже выполняется. Выходим."
+        log_warn "The script is already running. Exit"
         exit 0
     fi
 }
 
 cleanup() {
     lock -u "$LOCK_FILE" 2>/dev/null || true
-
+    rm -f "$TMP_BASE/print.lock" 2>/dev/null || true
     if [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR}" ]; then
         if [[ "$TMPDIR" == "$TMP_BASE/"* ]]; then
             rm -rf "$TMPDIR"
         else
-            log_err "Некорректный TMPDIR ($TMPDIR), очистка отменена!"
+            log_err "Invalid TMPDIR ($TMPDIR), cleanup cancelled!"
         fi
     fi
 }
@@ -224,13 +232,13 @@ safe_load_stats() {
     [ -f "$stats_file" ] || return 0
     while IFS='=' read -r key val; do
         [ -z "$key" ] || [ "${key#\#}" != "$key" ] && continue
-        val=$(echo "$val" | sed "s/'//g")
+        val="${val//\'/}"
         case "$key" in
             L_V4) L_V4="${val//[^0-9]/}" ;;
             L_V6) L_V6="${val//[^0-9]/}" ;;
             L_TOT) L_TOT="${val//[^0-9]/}" ;;
             L_BYTES) L_BYTES="${val//[^0-9]/}" ;;
-            L_TS) L_TS="$val" ;; # Сохраняем строку с датой как есть, без tr
+            L_TS) L_TS="$val" ;;
         esac
     done < "$stats_file" 2>/dev/null
 }
@@ -250,8 +258,14 @@ check_disk_space() {
     done
 }
 
-trap 'log_warn "Interrupted! Cleaning up..."; cleanup; exit 130' INT TERM
-trap cleanup EXIT
+terminate_children() {
+    pkill -TERM -P $$ 2>/dev/null || true
+    sleep 0.3
+    pkill -KILL -P $$ 2>/dev/null || true
+}
+
+trap 'log_warn "Interrupted! Cleaning up..."; terminate_children; cleanup; exit 130' INT TERM
+trap 'terminate_children; cleanup' EXIT
 
 # ==============================================================================
 # 4. HELPER FUNCTIONS
@@ -266,6 +280,24 @@ check_dependencies() {
     done
 }
 
+get_random_ua() {
+    local count=${#USER_AGENTS[@]}
+    echo "${USER_AGENTS[$((RANDOM % count))]}"
+}
+
+send_ha_config() {
+    local suffix="$1" name="$2" tpl="$3" unit="$4" icon="$5" class="$6"
+    local uid="${node_id}_${suffix}"
+    local topic="${MQTT_PREFIX}_${suffix}/config"
+    
+    local payload='{"name":"'"$name"'","unique_id":"'"$uid"'","state_topic":"'"$MQTT_TOPIC_STATE"'","value_template":"{{ value_json.'"$tpl"' }}","icon":"'"$icon"'","device":'"$dev_json"''
+    [ -n "$unit" ] && payload="${payload},\"unit_of_measurement\":\"${unit}\",\"state_class\":\"measurement\""
+    [ -n "$class" ] && payload="${payload},\"device_class\":\"${class}\""
+    payload="${payload}}"
+    
+    mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -r -t "$topic" -m "$payload" &
+}
+
 send_mqtt_notification() {
     [ "$MQTT_SEND" -ne 1 ] && return 0
     if ! command -v mosquitto_pub >/dev/null 2>&1; then
@@ -273,43 +305,18 @@ send_mqtt_notification() {
         return 0
     fi
 
-    # Используем сгенерированные переменные (напр. nfqws_youtube)
     local node_id="nfqws_${MQTT_SAFE_ID}"
     local dev_json='{"identifiers":["'$node_id'"],"name":"'"$MQTT_DEVICE_NAME"'","manufacturer":"Bash Script","model":"Router DPI Bypass"}'
     
     log_info "Sending MQTT configs to Home Assistant..."
     
-    # Время последнего обновления списков
-    mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -r \
-        -t "${MQTT_PREFIX}_status/config" \
-        -m '{"name":"Last update", "unique_id":"'${node_id}'_status", "state_topic":"'${MQTT_TOPIC_STATE}'", "value_template":"{{ value_json.last_update }}", "json_attributes_topic":"'${MQTT_TOPIC_STATE}'", "device_class":"timestamp", "icon":"mdi:clock-check-outline", "device":'"$dev_json"'}' &
+    send_ha_config "status"   "Last update"      "last_update" ""        "mdi:clock-check-outline" "timestamp"
+    send_ha_config "last_run" "Last run"         "start_time"  ""        "mdi:script-text-play"    "timestamp"
+    send_ha_config "ips"      "Total IP ranges"  "total_ips"   "IPs"     "mdi:ip-network"          ""
+    send_ha_config "ipv4"     "IPv4 ranges"      "ipv4"        "IPs"     "mdi:numeric-4-box-multiple" ""
+    send_ha_config "ipv6"     "IPv6 ranges"      "ipv6"        "IPs"     "mdi:numeric-6-box-multiple" ""
+    send_ha_config "size"     "File size"        "size_bytes"  "B"       "mdi:file-cog-outline"    "data_size"
 
-    # Время последнего запуска скрипта
-    mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -r \
-        -t "${MQTT_PREFIX}_last_run/config" \
-        -m '{"name":"Last run", "unique_id":"'${node_id}'_last_run", "state_topic":"'${MQTT_TOPIC_STATE}'", "value_template":"{{ value_json.start_time }}", "device_class":"timestamp", "icon":"mdi:script-text-play", "device":'"$dev_json"'}' &
-
-    # Всего IP
-    mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -r \
-        -t "${MQTT_PREFIX}_ips/config" \
-        -m '{"name":"Total IP ranges", "unique_id":"'${node_id}'_ips", "state_topic":"'${MQTT_TOPIC_STATE}'", "value_template":"{{ value_json.total_ips }}", "unit_of_measurement":"IPs", "icon":"mdi:ip-network", "state_class":"measurement", "device":'"$dev_json"'}' &
-
-    # IPv4
-    mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -r \
-        -t "${MQTT_PREFIX}_ipv4/config" \
-        -m '{"name":"IPv4 ranges", "unique_id":"'${node_id}'_ipv4", "state_topic":"'${MQTT_TOPIC_STATE}'", "value_template":"{{ value_json.ipv4 }}", "unit_of_measurement":"IPs", "icon":"mdi:numeric-4-box-multiple", "state_class":"measurement", "device":'"$dev_json"'}' &
-
-    # IPv6
-    mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -r \
-        -t "${MQTT_PREFIX}_ipv6/config" \
-        -m '{"name":"IPv6 ranges", "unique_id":"'${node_id}'_ipv6", "state_topic":"'${MQTT_TOPIC_STATE}'", "value_template":"{{ value_json.ipv6 }}", "unit_of_measurement":"IPs", "icon":"mdi:numeric-6-box-multiple", "state_class":"measurement", "device":'"$dev_json"'}' &
-
-    # Размер файла
-    mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -r \
-        -t "${MQTT_PREFIX}_size/config" \
-        -m '{"name":"File size", "unique_id":"'${node_id}'_size", "state_topic":"'${MQTT_TOPIC_STATE}'", "value_template":"{{ value_json.size_bytes }}", "unit_of_measurement":"B", "device_class":"data_size", "state_class":"measurement", "device":'"$dev_json"'}' &
-
-    # Отправка payload (основные данные)
     local payload
     payload=$(printf '{"start_time": "%s", "last_update": "%s", "total_ips": %s, "ipv4": %s, "ipv6": %s, "size_bytes": %s}' \
               "$START_TS" "$SHOW_TS" "$STAT_TOTAL" "$STAT_V4" "$STAT_V6" "$STAT_BYTES")
@@ -317,13 +324,9 @@ send_mqtt_notification() {
     mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -u "$MQTT_USER" -P "$MQTT_PASS" -r \
         -t "$MQTT_TOPIC_STATE" -m "$payload" &
         
-    # Ждем, пока все фоновые процессы отправки завершатся
     wait
-    
     log_succ "MQTT payload and configs sent successfully!"
 }
-
-extract_domain() { echo "$1" | awk -F/ '{print $3}'; }
 
 fetch_source() {
     local type="$1"; local src="$2"; local domain_label="$3"
@@ -357,21 +360,45 @@ fetch_source() {
             else status="CACHE"; color="$YELLOW"; fi
         fi
     else 
-        if [ -f "$cache_path" ]; then
-            if curl $CURL_OPTS -z "$cache_path" -o "$tmp_dl" "$src" 2>/dev/null; then
-                if [ -s "$tmp_dl" ]; then mv "$tmp_dl" "$cache_path"; status="UPDATED"; color="$GREEN"
-                else status="CACHE"; color="$YELLOW"; rm -f "$tmp_dl"; fi
-            else status="FAIL(Cache)"; color="$RED"; rm -f "$tmp_dl"; fi
+        local had_cache=0
+        [ -f "$cache_path" ] && had_cache=1
+        
+        local current_ua
+        current_ua=$(get_random_ua)
+        
+        local curl_opts=(-sSL --connect-timeout 10 --max-time 30 --max-filesize "$MAX_FILESIZE_BYTES" --retry 3 --retry-delay "$PAUSE" -A "$current_ua")
+        
+        local http_code="000"
+        local curl_exit=0
+        
+        if [ "$had_cache" -eq 1 ]; then
+            http_code=$(curl "${curl_opts[@]}" -z "$cache_path" -o "$tmp_dl" -w "%{http_code}" "$src" 2>/dev/null) || curl_exit=$?
         else
-            if curl $CURL_OPTS -o "$tmp_dl" "$src" 2>/dev/null; then
-                if [ -s "$tmp_dl" ]; then mv "$tmp_dl" "$cache_path"; status="NEW"; color="$GREEN"
-                else status="EMPTY"; color="$RED"; rm -f "$tmp_dl"; fi
-            else status="ERROR"; color="$RED"; rm -f "$tmp_dl"; fi
+            http_code=$(curl "${curl_opts[@]}" -o "$tmp_dl" -w "%{http_code}" "$src" 2>/dev/null) || curl_exit=$?
+        fi
+        
+        [ "$curl_exit" -ne 0 ] && http_code="000"
+
+        if [ "$http_code" = "200" ]; then
+            if [ -s "$tmp_dl" ]; then 
+                mv "$tmp_dl" "$cache_path"
+                if [ "$had_cache" -eq 1 ]; then status="UPDATED"; else status="NEW"; fi
+                color="$GREEN"
+            else 
+                status="EMPTY"; color="$RED"; rm -f "$tmp_dl"
+            fi
+        elif [ "$http_code" = "304" ]; then
+            status="CACHE"; color="$YELLOW"; rm -f "$tmp_dl"
+        elif [ "$http_code" = "403" ]; then
+            status="BLOCKED"; color="$RED"; rm -f "$tmp_dl"
+        elif [ "$http_code" = "429" ]; then
+            status="RATE LIMIT"; color="$RED"; rm -f "$tmp_dl"
+        else
+            status="ERR($http_code)"; color="$RED"; rm -f "$tmp_dl"
         fi
     fi
     if [ -f "$cache_path" ] && [ "$status" != "MISSING" ]; then cp "$cache_path" "$work_path"; fi
     
-    # Синхронный вывод через OpenWrt lock
     lock "$TMP_BASE/print.lock"
     printf " [%-32s] %-10s -> ${color}%s${NC}\n" "$domain_label" "$short_name" "$status"
     lock -u "$TMP_BASE/print.lock"
@@ -379,19 +406,19 @@ fetch_source() {
 
 cleanup_old_cache() {
     log_step "Cleaning up obsolete cache files..."
-    local count=0
+    local active_list="${TMPDIR:-}/active_cache.list"
+    if [ ! -f "$active_list" ]; then
+        log_info "Cache is clean (no active list)."
+        return 0
+    fi
+
+    local to_delete
+    to_delete=$(find "$CACHE_DIR" -maxdepth 1 -name "*.txt" | awk -F/ '{print $NF}' | grep -v -F -x -f "$active_list" || true)
     
-    for f in "$CACHE_DIR"/*.txt; do
-        [ -e "$f" ] || continue
-        local bname
-        bname=$(basename "$f")
-        if ! grep -qF "$bname" "${TMPDIR:-}/active_cache.list" 2>/dev/null; then
-             rm -f "$f"
-             count=$((count+1))
-        fi
-    done
-    
-    if [ "$count" -gt 0 ]; then
+    if [ -n "$to_delete" ]; then
+        local count
+        count=$(echo "$to_delete" | wc -l | tr -d '[:space:]')
+        echo "$to_delete" | xargs -I {} rm -f "$CACHE_DIR/{}"
         log_succ "Removed $count unused files."
     else
         log_info "Cache is clean."
@@ -404,19 +431,23 @@ validate_cidr() {
     local lines
     lines=$(wc -l < "$infile" 2>/dev/null || echo "???")
     printf " Validating ${CYAN}%-4s${NC} ranges (%s lines)... " "$type" "$lines"
-    > "$outfile"
     
-    if [ "$type" = "ipv6" ]; then
+    local prefilter="${TMPDIR:-}/$type.prefilter"
+    
+    if [ "$type" = "ipv4" ]; then
+        grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$' "$infile" > "$prefilter" 2>/dev/null || true
+        while IFS= read -r line || [ -n "$line" ]; do 
+            sipcalc -c "$line" >/dev/null 2>&1 && echo "$line"
+        done < "$prefilter" > "$outfile"
+    else
+        grep -E '^[0-9a-fA-F:]+(/[0-9]{1,3})?$' "$infile" | grep ':' > "$prefilter" 2>/dev/null || true
         while IFS= read -r line || [ -n "$line" ]; do
             local expanded
-            expanded=$(timeout 0.5 sipcalc "$line" 2>/dev/null | awk '/Expanded Address/ {print $NF}' || true)
-            if [ -n "$expanded" ]; then printf "%s\t%s\n" "$expanded" "$line" >> "$outfile"; fi
-        done < "$infile"
-    else
-        while IFS= read -r line || [ -n "$line" ]; do 
-            sipcalc -c "$line" >/dev/null 2>&1 && echo "$line" >> "$outfile"
-        done < "$infile"
+            expanded=$(timeout 0.5 sipcalc "$line" 2>/dev/null | awk '/Expanded Address/ {print $NF}')
+            [ -n "$expanded" ] && printf "%s\t%s\n" "$expanded" "$line"
+        done < "$prefilter" > "$outfile"
     fi
+    
     local valid
     valid=$(wc -l < "$outfile" 2>/dev/null || echo "0")
     printf "${GREEN}Done${NC} (Valid: $valid)\n"
@@ -476,13 +507,11 @@ calc_stats() {
 guard_rails() {
     if [ "$SKIP_SAFETY" -eq 1 ]; then log_warn "Safety check DISABLED"; return 0; fi
 
-    # 1. Жесткая проверка минимального количества строк (ВСЕГДА)
     if [ "$STAT_TOTAL" -lt "$MIN_LINES" ]; then 
         log_err "SAFETY TRIGGER: Too small (< $MIN_LINES lines)."
         rm -f "$TMP_OUTPUT_FILE"; exit 1
     fi
 
-    # 2. Проверка аномального падения объема относительно старой версии
     if [ -f "$OUTPUT_FILE" ]; then
         local old_total limit=0
         old_total=$(wc -l < "$OUTPUT_FILE" 2>/dev/null | tr -d '[:space:]' || echo 0)
@@ -547,7 +576,6 @@ apply_changes() {
         else 
             log_warn "Service restart SKIPPED (flag -R active)."
         fi
-               
     else log_err "Failed to move output file!"; exit 1; fi
 }
 
@@ -562,19 +590,21 @@ phase_download() {
         local queue_dir="${TMPDIR:-}/queues"
         mkdir -p "$queue_dir"
         log_step "Grouping $count_urls URLs by domain..."
-        echo "$URLS_CONTENT" | while IFS= read -r url; do
-            [ -z "$url" ] && continue
-            local domain
-            domain=$(extract_domain "$url")
-            [ -z "$domain" ] && domain="unknown"
-            echo "$url" >> "$queue_dir/${domain}.list"
-        done
-        local domain_count
-        domain_count=$(ls "$queue_dir"/*.list 2>/dev/null | wc -l)
+        
+        echo "$URLS_CONTENT" | awk -F/ -v qdir="$queue_dir" '
+            NF {
+                domain = $3
+                if (domain == "") domain = "unknown"
+                gsub(/[^a-zA-Z0-9.-]/, "_", domain)
+                print $0 >> (qdir "/" domain ".list")
+            }
+        '
+        
         log_step "Starting parallel downloads in background (Max: $SORT_PARALLEL)..."
         echo ""
         log_info "Processing..."
         echo ""
+        
         for queue_file in "$queue_dir"/*.list; do
             [ -e "$queue_file" ] || continue
             
@@ -589,7 +619,10 @@ phase_download() {
                 while IFS= read -r target_url || [ -n "$target_url" ]; do
                     [ -z "$target_url" ] && continue
                     idx=$((idx+1))
-                    [ "$idx" -gt 1 ] && sleep "$PAUSE"
+                    if [ "$idx" -gt 1 ]; then
+                        local jitter=$((RANDOM % 3))
+                        sleep "$((PAUSE + jitter))"
+                    fi
                     fetch_source "url" "$target_url" "$dom_name"
                 done < "$queue_file"
             ) & 
@@ -606,11 +639,10 @@ phase_download() {
         cat "${TMPDIR:-}"/active_cache_*.list > "${TMPDIR:-}/active_cache.list"
         cleanup_old_cache
     else
-        log_warn "No cache lists generated. Skipping cache cleanup to avoid data loss."
+        log_warn "No cache lists generated. Skipping cache cleanup."
     fi
 }
 
-# Оптимизация сборки текстовых файлов перед awk
 phase_process() {
     log_step "Processing and merging lists..."
     find "${TMPDIR:-}" -name "*.txt" -type f -print0 2>/dev/null | \
@@ -619,7 +651,6 @@ phase_process() {
 }
 
 phase_validate() { log_step "Validating..."; validate_cidr "ipv4"; validate_cidr "ipv6"; }
-
 phase_sort() { log_step "Optimizing..."; sort_list "ipv4"; sort_list "ipv6"; }
 
 phase_finalize() {
@@ -629,10 +660,21 @@ phase_finalize() {
     guard_rails
     compare_and_report
     local needs_update=0
-    if [ "$CHANGED" -eq 1 ]; then needs_update=1; elif [ "$L_TOT" -eq 0 ]; then
-        echo "L_TS='$SHOW_TS'" >> "$CACHE_DIR/.stats"
+    if [ "$CHANGED" -eq 1 ]; then
+        needs_update=1
+    elif [ "$L_TOT" -eq 0 ]; then
+        {
+            echo "L_V4=$STAT_V4"
+            echo "L_V6=$STAT_V6"
+            echo "L_TOT=$STAT_TOTAL"
+            echo "L_BYTES=$STAT_BYTES"
+            echo "L_TS='$SHOW_TS'"
+        } > "$CACHE_DIR/.stats"
+        rm -f "$TMP_OUTPUT_FILE"
     fi
-    if [ "$needs_update" -eq 1 ]; then apply_changes; else rm -f "$TMP_OUTPUT_FILE"; fi
+    if [ "$needs_update" -eq 1 ]; then
+        apply_changes
+    fi
 }
 
 main() {
