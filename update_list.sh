@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 
-export LANG=C
 export LC_ALL=C
-export LANGUAGE=C
-export LC_CTYPE=C
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 set -euo pipefail
 
@@ -17,11 +14,11 @@ else
     RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; NC=''
 fi
 
-log_info() { printf "${BLUE}INFO:${NC} %s\n" "$1"; }
-log_step() { printf "${CYAN}==>${NC} %s\n" "$1"; }
-log_succ() { printf "${GREEN}OK:${NC} %s\n" "$1"; }
-log_warn() { printf "${YELLOW}WARN:${NC} %s\n" "$1"; }
-log_err()  { printf "${RED}ERR:${NC} %s\n" "$1"; }
+log_info() { printf '%bINFO:%b %s\n'  "$BLUE"   "$NC" "$1"; }
+log_step() { printf '%b==>%b %s\n'    "$CYAN"   "$NC" "$1"; }
+log_succ() { printf '%bOK:%b %s\n'    "$GREEN"  "$NC" "$1"; }
+log_warn() { printf '%bWARN:%b %s\n'  "$YELLOW" "$NC" "$1"; }
+log_err()  { printf '%bERR:%b %s\n'   "$RED"    "$NC" "$1"; }
 
 DEFAULT_WORKDIR="/tmp/nfqws_updater"
 DEFAULT_PAUSE=3
@@ -36,10 +33,10 @@ NO_RESTART=0
 
 # User-Agents
 USER_AGENTS=(
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 17_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/152.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 17_8) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:144.0) Gecko/20100101 Firefox/153.0"
 )
 
 START_TS=$(date "+%Y-%m-%dT%H:%M:%S%z")
@@ -182,20 +179,20 @@ print_config_table() {
     [ "$NO_RESTART" -eq 1 ] && rest_str="${YELLOW}SKIPPED${NC}" || rest_str="${GREEN}ENABLED${NC}"
 
     echo ""; echo "=================================================="
-    printf "  ${CYAN}CONFIGURATION${NC}\n"
+    printf '  %bCONFIGURATION%b\n' "$CYAN" "$NC"
     echo "=================================================="
-    if [ -n "$LIST_FILE" ]; then printf "  List file    : %s\n" "$LIST_FILE"
-    else printf "  List file    : ${YELLOW}none${NC}\n"; fi
-    if [ -n "$EXISTING_FILE" ]; then printf "  Existing file: %s\n" "$EXISTING_FILE"
-    else printf "  Existing file: ${YELLOW}none${NC}\n"; fi
-    printf "  Output file  : %s\n" "$OUTPUT_FILE"
-    printf "  Work dir     : %s\n" "$WORKDIR"
-    printf "  Using RAM    : %s\n" "$SORT_RAM"
-    printf "  Using threads: %s\n" "$SORT_PARALLEL"
-    printf "  Safety check : %b\n" "$safe_str"
-    printf "  Dry run      : %b\n" "$dry_str"
-    printf "  Auto restart : %b\n" "$rest_str"
-    printf "  Pause        : %s sec\n" "$PAUSE"
+    if [ -n "$LIST_FILE" ]; then printf '  List file    : %s\n' "$LIST_FILE"
+    else printf '  List file    : %bnone%b\n' "$YELLOW" "$NC"; fi
+    if [ -n "$EXISTING_FILE" ]; then printf '  Existing file: %s\n' "$EXISTING_FILE"
+    else printf '  Existing file: %bnone%b\n' "$YELLOW" "$NC"; fi
+    printf '  Output file  : %s\n' "$OUTPUT_FILE"
+    printf '  Work dir     : %s\n' "$WORKDIR"
+    printf '  Using RAM    : %s\n' "$SORT_RAM"
+    printf '  Using threads: %s\n' "$SORT_PARALLEL"
+    printf '  Safety check : %b\n' "$safe_str"
+    printf '  Dry run      : %b\n' "$dry_str"
+    printf '  Auto restart : %b\n' "$rest_str"
+    printf '  Pause        : %s sec\n' "$PAUSE"
     echo "=================================================="; echo ""
 }
 
@@ -218,6 +215,7 @@ acquire_lock() {
 cleanup() {
     lock -u "$LOCK_FILE" 2>/dev/null || true
     rm -f "$TMP_BASE/print.lock" 2>/dev/null || true
+    rm -f "${TMP_OUTPUT_FILE:-}" 2>/dev/null || true
     if [ -n "${TMPDIR:-}" ] && [ -d "${TMPDIR}" ]; then
         if [[ "$TMPDIR" == "$TMP_BASE/"* ]]; then
             rm -rf "$TMPDIR"
@@ -231,7 +229,7 @@ safe_load_stats() {
     local stats_file="$1"
     [ -f "$stats_file" ] || return 0
     while IFS='=' read -r key val; do
-        [ -z "$key" ] || [ "${key#\#}" != "$key" ] && continue
+        if [ -z "$key" ] || [ "${key#\#}" != "$key" ]; then continue; fi
         val="${val//\'/}"
         case "$key" in
             L_V4) L_V4="${val//[^0-9]/}" ;;
@@ -400,7 +398,7 @@ fetch_source() {
     if [ -f "$cache_path" ] && [ "$status" != "MISSING" ]; then cp "$cache_path" "$work_path"; fi
     
     lock "$TMP_BASE/print.lock"
-    printf " [%-32s] %-10s -> ${color}%s${NC}\n" "$domain_label" "$short_name" "$status"
+    printf ' [%-32s] %-10s -> %b%s%b\n' "$domain_label" "$short_name" "$color" "$status" "$NC"
     lock -u "$TMP_BASE/print.lock"
 }
 
@@ -409,6 +407,11 @@ cleanup_old_cache() {
     local active_list="${TMPDIR:-}/active_cache.list"
     if [ ! -f "$active_list" ]; then
         log_info "Cache is clean (no active list)."
+        return 0
+    fi
+
+    if [ ! -s "$active_list" ]; then
+        log_warn "Active cache list is empty � skipping cleanup to avoid data loss."
         return 0
     fi
 
@@ -430,7 +433,7 @@ validate_cidr() {
     [ ! -f "$infile" ] && touch "$outfile" && return
     local lines
     lines=$(wc -l < "$infile" 2>/dev/null || echo "???")
-    printf " Validating ${CYAN}%-4s${NC} ranges (%s lines)... " "$type" "$lines"
+    printf ' Validating %b%-4s%b ranges (%s lines)... ' "$CYAN" "$type" "$NC" "$lines"
     
     local prefilter="${TMPDIR:-}/$type.prefilter"
     
@@ -450,28 +453,28 @@ validate_cidr() {
     
     local valid
     valid=$(wc -l < "$outfile" 2>/dev/null || echo "0")
-    printf "${GREEN}Done${NC} (Valid: $valid)\n"
+    printf '%bDone%b (Valid: %s)\n' "$GREEN" "$NC" "$valid"
 }
 
 sort_list() {
     local type="$1"; shift
     local infile="${TMPDIR:-}/$type.valid"; local outfile="${TMPDIR:-}/$type.sorted"
-    printf " Sorting ${CYAN}%-4s${NC} " "$type"
+    printf ' Sorting %b%-4s%b ' "$CYAN" "$type" "$NC"
     if [ ! -f "$infile" ]; then touch "$outfile"; echo "(Skipped)"; return; fi
     
     if [ "$type" = "ipv4" ] && command -v iprange >/dev/null 2>&1; then
         printf "(Optimizing with iprange)... "
         if iprange "$infile" > "$outfile" 2>/dev/null; then
-            printf "${GREEN}Done${NC}\n"
+            printf '%bDone%b\n' "$GREEN" "$NC"
             return 0
         else
-            printf "${YELLOW}iprange failed, falling back to awk...${NC}\n"
+            printf '%biprange failed, falling back to awk...%b\n' "$YELLOW" "$NC"
         fi
     fi
     
-    local cmd_sort="sort"
+    local -a cmd_sort=(sort)
     if sort --parallel=1 -S 1M < /dev/null >/dev/null 2>&1; then
-        cmd_sort="sort --parallel=$SORT_PARALLEL -S $SORT_RAM"
+        cmd_sort=(sort --parallel="$SORT_PARALLEL" -S "$SORT_RAM")
     fi
     
     local awk_ipv4_prep='
@@ -487,13 +490,18 @@ sort_list() {
     '
     if [ "$type" = "ipv6" ]; then
         printf "(Sorting)... "
-        if $cmd_sort -u -k1,1 "$infile" 2>/dev/null | cut -f2 > "$outfile"; then printf "${GREEN}Done${NC}\n"
-        else printf "${RED}Failed${NC}\n"; return 1; fi
+        if "${cmd_sort[@]}" -u -k1,1 "$infile" 2>/dev/null | cut -f2 > "$outfile"; then
+            printf '%bDone%b\n' "$GREEN" "$NC"
+        else
+            printf '%bFailed%b\n' "$RED" "$NC"; return 1
+        fi
     else
         printf "(Sorting)... "
-        if awk "$awk_ipv4_prep" "$infile" | $cmd_sort -k1,1n -k2,2rn | awk "$AWK_SCRIPT_OPTIMIZER" > "$outfile"; then 
-            printf "${GREEN}Done${NC}\n"
-        else printf "${RED}Failed${NC}\n"; return 1; fi
+        if awk "$awk_ipv4_prep" "$infile" | "${cmd_sort[@]}" -k1,1n -k2,2rn | awk "$AWK_SCRIPT_OPTIMIZER" > "$outfile"; then 
+            printf '%bDone%b\n' "$GREEN" "$NC"
+        else
+            printf '%bFailed%b\n' "$RED" "$NC"; return 1
+        fi
     fi
 }
 
@@ -509,7 +517,7 @@ guard_rails() {
 
     if [ "$STAT_TOTAL" -lt "$MIN_LINES" ]; then 
         log_err "SAFETY TRIGGER: Too small (< $MIN_LINES lines)."
-        rm -f "$TMP_OUTPUT_FILE"; exit 1
+        exit 1
     fi
 
     if [ -f "$OUTPUT_FILE" ]; then
@@ -523,7 +531,7 @@ guard_rails() {
         if [ "$STAT_TOTAL" -lt "$limit" ]; then 
             log_err "SAFETY TRIGGER: New list size is too small (-${THRESHOLD_PERCENT}% drop)."
             log_warn "If intended, run with -S to skip safety check."
-            rm -f "$TMP_OUTPUT_FILE"; exit 1
+            exit 1
         fi
     fi
 }
@@ -546,15 +554,16 @@ compare_and_report() {
         if [ "$sum_new" = "$sum_old" ]; then CHANGED=0; head_color="${YELLOW}"; fi
     fi
     if [ "$CHANGED" -eq 1 ]; then SHOW_TS="$current_ts"; else SHOW_TS="${L_TS:-$current_ts}"; fi
+
     echo ""; echo "=================================================="
-    printf "  ${head_color}STATISTICS${NC}\n"
+    printf '  %bSTATISTICS%b\n' "$head_color" "$NC"
     echo "=================================================="
     print_row() { awk -v lbl="$1" -v curr="$2" -v last="$3" -v is_bytes="$4" -v red="$RED" -v green="$GREEN" -v nc="$NC" "$AWK_SCRIPT_STATS"; }
     print_row "IPv4 ranges" "$STAT_V4" "$L_V4" 0
     print_row "IPv6 ranges" "$STAT_V6" "$L_V6" 0
     print_row "Total ranges" "$STAT_TOTAL" "$L_TOT" 0
     print_row "File size" "$STAT_BYTES" "$L_BYTES" 1
-    printf "  %-13s: %s\n" "Last updated" "$SHOW_TS"
+    printf '  %-13s: %s\n' "Last updated" "$SHOW_TS"
     echo "=================================================="; echo ""
 }
 
@@ -563,7 +572,7 @@ apply_changes() {
     local stats_file="$CACHE_DIR/.stats"
     if mv "$TMP_OUTPUT_FILE" "$OUTPUT_FILE"; then
         echo "[$(date)] OK: total=$STAT_TOTAL v4=$STAT_V4 v6=$STAT_V6 size=$STAT_BYTES output=$OUTPUT_FILE" >> "$LOG_FILE"
-        logger -t nfqws-updater "Успешное обновление списков: $STAT_TOTAL IP-диапазонов (IPv4: $STAT_V4, IPv6: $STAT_V6)" 2>/dev/null || true
+        logger -t nfqws-updater "Successful list update: $STAT_TOTAL IP ranges (IPv4: $STAT_V4, IPv6: $STAT_V6)" 2>/dev/null || true
         echo "L_V4=$STAT_V4" > "$stats_file"; echo "L_V6=$STAT_V6" >> "$stats_file"
         echo "L_TOT=$STAT_TOTAL" >> "$stats_file"; echo "L_BYTES=$STAT_BYTES" >> "$stats_file"
         echo "L_TS='$SHOW_TS'" >> "$stats_file"
@@ -577,6 +586,23 @@ apply_changes() {
             log_warn "Service restart SKIPPED (flag -R active)."
         fi
     else log_err "Failed to move output file!"; exit 1; fi
+}
+
+_process_domain_queue() {
+    set +e
+    local queue_file="$1"
+    local dom_name
+    dom_name=$(basename "$queue_file" .list)
+    local idx=0
+    while IFS= read -r target_url || [ -n "$target_url" ]; do
+        [ -z "$target_url" ] && continue
+        idx=$((idx+1))
+        if [ "$idx" -gt 1 ]; then
+            local jitter=$((RANDOM % 3))
+            sleep "$((PAUSE + jitter))"
+        fi
+        fetch_source "url" "$target_url" "$dom_name"
+    done < "$queue_file"
 }
 
 phase_download() {
@@ -611,21 +637,7 @@ phase_download() {
             while [ "$(jobs -p | wc -l)" -ge "$SORT_PARALLEL" ]; do
                 sleep 1
             done
-            (
-                set +e 
-                local dom_name
-                dom_name=$(basename "$queue_file" .list)
-                local idx=0
-                while IFS= read -r target_url || [ -n "$target_url" ]; do
-                    [ -z "$target_url" ] && continue
-                    idx=$((idx+1))
-                    if [ "$idx" -gt 1 ]; then
-                        local jitter=$((RANDOM % 3))
-                        sleep "$((PAUSE + jitter))"
-                    fi
-                    fetch_source "url" "$target_url" "$dom_name"
-                done < "$queue_file"
-            ) & 
+            _process_domain_queue "$queue_file" &
         done
         
         wait
